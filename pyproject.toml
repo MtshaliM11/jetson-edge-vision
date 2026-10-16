@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jetson-edge-vision"
+version = "0.1.0"
+description = "Local computer vision for NVIDIA Jetson"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+jetson-edge-vision = "jetson_edge_vision.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
