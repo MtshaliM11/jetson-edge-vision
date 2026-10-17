@@ -5,6 +5,10 @@ import time
 from .detection import DEFAULT_WEIGHTS, MODEL_NAME, SSDLiteDetector, validate_options
 
 
+TRACK_COLORS = ((0, 255, 0), (255, 190, 0), (0, 220, 255),
+                (255, 100, 255), (255, 255, 0), (160, 255, 120))
+
+
 def annotate_image(frame, detections: list[dict]):
     import cv2
 
@@ -14,13 +18,17 @@ def annotate_image(frame, detections: list[dict]):
         x1, y1, x2, y2 = detection["box_xyxy"]
         x1, x2 = (max(0, min(width - 1, round(x))) for x in (x1, x2))
         y1, y2 = (max(0, min(height - 1, round(y))) for y in (y1, y2))
-        cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        color = TRACK_COLORS[(detection["track_id"] - 1) % len(TRACK_COLORS)] if "track_id" in detection else (0, 255, 0)
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
         text = f"{detection['class_name']} {detection['confidence']:.2f}"
+        if "track_id" in detection:
+            suffix = "" if detection["track_confirmed"] else "?"
+            text = f"{detection['class_name']} #{detection['track_id']:03d}{suffix} {detection['confidence']:.2f}"
         (tw, th), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         tx = max(0, min(x1, width - tw - 1))
         ty = min(height - 1 - baseline, max(th + 2, y1 - 5))
         cv2.rectangle(annotated, (tx, max(0, ty - th - 2)),
-                      (min(width - 1, tx + tw), min(height - 1, ty + baseline)), (0, 255, 0), -1)
+                      (min(width - 1, tx + tw), min(height - 1, ty + baseline)), color, -1)
         cv2.putText(annotated, text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX,
                     0.5, (0, 0, 0), 1, cv2.LINE_AA)
     return annotated

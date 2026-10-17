@@ -26,6 +26,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-frames", type=int, help="Video-only processing limit, >= 1")
     parser.add_argument("--codec", help="Video output FourCC (defaults: mp4v for MP4/MOV, MJPG for AVI)")
     parser.add_argument("--output-fps", type=float, help="Video output FPS override; required if source FPS is unknown")
+    tracking_mode = parser.add_mutually_exclusive_group()
+    tracking_mode.add_argument("--track", action="store_true", help="Enable class-aware IoU video tracking")
+    tracking_mode.add_argument("--no-track", action="store_true", help="Disable video tracking (default)")
+    parser.add_argument("--track-iou", type=float, help="Tracking association IoU in (0, 1] (default: 0.3)")
+    parser.add_argument("--track-max-missed", type=int, help="Retain tracks for this many missed frames (default: 5)")
+    parser.add_argument("--track-min-hits", type=int, help="Consecutive observations required for confirmation (default: 2)")
     args = parser.parse_args(argv)
     if (args.image is not None or args.video is not None) and args.output is None:
         parser.error("--image or --video requires --output")
@@ -35,6 +41,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--max-frames, --codec, and --output-fps require --video")
     if args.video is not None and args.runs is not None:
         parser.error("--runs is image-only; video performs exactly one measured inference per frame")
+    tracking_options = (args.track_iou, args.track_max_missed, args.track_min_hits)
+    if args.video is None and (args.track or args.no_track or any(value is not None for value in tracking_options)):
+        parser.error("Tracking flags require --video")
+    if not args.track and any(value is not None for value in tracking_options):
+        parser.error("--track-iou, --track-max-missed, and --track-min-hits require --track")
     logger = configure_logging()
     try:
         config = load_config(args.config)
@@ -45,10 +56,18 @@ def main(argv: list[str] | None = None) -> int:
         elif args.video is not None:
             from .detection import DEFAULT_WEIGHTS
             from .video_pipeline import detect_video
+            from .tracking import TrackingConfig
+            tracking_kwargs = {}
+            if args.track:
+                tracking_kwargs = {"tracking": True, "tracking_config": TrackingConfig(
+                    iou_threshold=args.track_iou if args.track_iou is not None else 0.3,
+                    max_missed=args.track_max_missed if args.track_max_missed is not None else 5,
+                    min_hits=args.track_min_hits if args.track_min_hits is not None else 2,
+                )}
             result = detect_video(args.video, args.output, device=config.device,
                                   confidence=args.confidence, weights_path=args.weights or DEFAULT_WEIGHTS,
                                   warmup=args.warmup, max_frames=args.max_frames,
-                                  codec=args.codec, output_fps=args.output_fps)
+                                  codec=args.codec, output_fps=args.output_fps, **tracking_kwargs)
             print(json.dumps(result, indent=2))
             logger.info("Video detection completed; device=%s; frames=%d; processing_fps=%.2f",
                         config.device, result["frames_processed"], result["processing_fps"])

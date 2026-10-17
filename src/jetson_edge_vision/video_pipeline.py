@@ -2,6 +2,8 @@
 from array import array
 from collections import Counter
 from contextlib import ExitStack
+import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -11,6 +13,7 @@ import time
 
 from .detection import DEFAULT_WEIGHTS, MODEL_NAME, SSDLiteDetector, validate_options
 from .image_pipeline import annotate_image
+from .tracking import IoUTracker, TrackingConfig
 
 
 DEFAULT_CODECS = {".mp4": "mp4v", ".mov": "mp4v", ".avi": "MJPG"}
@@ -84,7 +87,8 @@ def verify_output(path: Path, expected_frames: int, size: tuple[int, int], fps: 
 def detect_video(video_path: Path, output_path: Path, *, device: str = "cuda",
                  confidence: float = 0.5, weights_path: Path = DEFAULT_WEIGHTS,
                  warmup: int = 3, max_frames: int | None = None,
-                 codec: str | None = None, output_fps: float | None = None) -> dict:
+                 codec: str | None = None, output_fps: float | None = None,
+                 tracking: bool = False, tracking_config: TrackingConfig | None = None) -> dict:
     """Process one frame at a time. Only scalar latency samples accumulate.
 
     Output is staged next to its destination and published without replacement
@@ -92,6 +96,14 @@ def detect_video(video_path: Path, output_path: Path, *, device: str = "cuda",
     """
     started = time.perf_counter()
     validate_options(confidence, warmup, 1)
+    if type(tracking) is not bool:
+        raise ValueError("tracking must be enabled or disabled with a boolean")
+    if tracking_config is not None and not isinstance(tracking_config, TrackingConfig):
+        raise ValueError("tracking_config must be a TrackingConfig")
+    if not tracking and tracking_config is not None:
+        raise ValueError("Tracking options require tracking to be enabled")
+    tracker = IoUTracker(tracking_config) if tracking else None
+    logger = logging.getLogger("jetson_edge_vision")
     if max_frames is not None and (type(max_frames) is not int or max_frames < 1):
         raise ValueError("max-frames must be an integer >= 1")
     if output_fps is not None and (isinstance(output_fps, bool) or _positive_number(output_fps) is None):
@@ -158,6 +170,9 @@ def detect_video(video_path: Path, output_path: Path, *, device: str = "cuda",
                 detector.detect(frame, confidence=confidence, warmup=warmup - 1, runs=1)
             warmup_ms = (time.perf_counter() - warmup_started) * 1000
             samples = array("d")
+            association_samples = array("d")
+            peak_active_tracks = 0
+            visible_tracks = 0
             categories = Counter()
             processed = 0
             stream_started = time.perf_counter()
@@ -165,6 +180,16 @@ def detect_video(video_path: Path, output_path: Path, *, device: str = "cuda",
                 while True:
                     _frame_size(frame, processed, size)
                     result = detector.detect(frame, confidence=confidence, warmup=0, runs=1)
+                    if tracker is not None:
+                        association_started = time.perf_counter()
+                        result["detections"] = tracker.update(result["detections"])
+                        association_samples.append((time.perf_counter() - association_started) * 1000)
+                        peak_active_tracks = max(peak_active_tracks, len(tracker.tracks))
+                        visible_tracks = len(result["detections"])
+                        if logger.isEnabledFor(logging.DEBUG):
+                            logger.debug("Tracking frame: %s", json.dumps({
+                                "frame_index": processed, "detections": result["detections"],
+                            }))
                     annotated = annotate_image(frame, result["detections"])
                     if writer.write(annotated) is False:
                         raise OSError(f"Video writer failed at frame {processed}")
@@ -204,7 +229,28 @@ def detect_video(video_path: Path, output_path: Path, *, device: str = "cuda",
             "confidence_threshold": confidence, "warmup_runs": warmup,
             "max_frames": max_frames, "stop_reason": stop_reason,
             "frames_processed": processed, "total_detections": sum(categories.values()),
+            "average_detections_per_frame": sum(categories.values()) / processed,
             "detections_by_class": dict(sorted(categories.items())),
+            "tracking": {
+                "enabled": tracking, "algorithm": "class_aware_greedy_iou" if tracker else None,
+                "config": {"iou_threshold": tracker.config.iou_threshold,
+                           "max_missed": tracker.config.max_missed,
+                           "min_hits": tracker.config.min_hits} if tracker else None,
+                "active_tracks": len(tracker.tracks) if tracker else 0,
+                "confirmed_active_tracks": sum(t.confirmed for t in tracker.tracks) if tracker else 0,
+                "visible_tracks_last_frame": visible_tracks,
+                "peak_active_tracks": peak_active_tracks,
+                "tracks_created": tracker.tracks_created if tracker else 0,
+                "tracks_expired": tracker.tracks_expired if tracker else 0,
+                "matched_detections": tracker.matched_detections if tracker else 0,
+                "association": {
+                    "measured_frames": len(association_samples),
+                    "total_ms": sum(association_samples),
+                    "mean_ms": statistics.mean(association_samples) if association_samples else 0.,
+                    "median_ms": statistics.median(association_samples) if association_samples else 0.,
+                    "max_ms": max(association_samples) if association_samples else 0.,
+                },
+            },
             "inference": {"measured_frames": len(samples), "mean_ms": statistics.mean(samples),
                           "median_ms": statistics.median(samples), "min_ms": min(samples), "max_ms": max(samples)},
             "model_load_ms": model_load_ms, "warmup_ms": warmup_ms,

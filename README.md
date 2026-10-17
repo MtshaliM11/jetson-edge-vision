@@ -4,11 +4,59 @@ Local, GPU-accelerated computer vision for NVIDIA Jetson Orin Nano Super.
 The intended system combines detection, tracking, counting, and a local monitoring
 interface without cloud services for core processing.
 
-**Status: Phase 2B image and video-file detection verified on the Orin GPU.**
+**Status: Phase 3A optional video tracking verified on the Orin GPU.**
 
 SSDLite320 MobileNetV3-Large COCO_V1 runs with the existing PyTorch/Torchvision
 installation. It produces bounding boxes, COCO class names, confidence scores,
 annotated images/videos, and JSON measurements. No additional packages are required.
+
+## Track objects in a video (optional)
+
+Tracking uses an original class-aware greedy IoU baseline on the existing
+detections. It requires no new packages and does not replace or retrain the model.
+Activate the environment and set `PYTHONPATH` as in the video example below, then:
+
+```bash
+mkdir -p outputs
+python -m jetson_edge_vision --video data/sintel-sample.mp4 \
+  --output outputs/tracked-rerun.mp4 --confidence 0.5 --warmup 3 \
+  --track --track-iou 0.3 --track-max-missed 5 --track-min-hits 2 \
+  > outputs/tracked-rerun.json
+
+# Same source/options with tracking explicitly disabled:
+python -m jetson_edge_vision --video data/sintel-sample.mp4 \
+  --output outputs/untracked-rerun.mp4 --confidence 0.5 --warmup 3 \
+  --no-track > outputs/untracked-rerun.json
+```
+
+Tracking is **off by default**. The existing detection-only command is preserved.
+Tracking flags require `--video`; tuning flags also require `--track`.
+`--track-iou` must be in (0, 1], `--track-max-missed` a nonnegative integer, and
+`--track-min-hits` a positive integer. Defaults are 0.3, 5, and 2 respectively.
+Settings are CLI options; the existing JSON device/log-level schema is unchanged.
+
+IDs such as `person #001 0.97` are local to one video session. `#001?` means a
+tentative track, confirmed after the configured number of consecutive observations.
+IDs/colors remain consistent while associations succeed. Missed tracks retain
+their last observed box for association but are not drawn as current detections;
+they expire after more than the configured number of missed source frames.
+
+On the 48-frame sample, #001 persisted over frames 0–23; #002 persisted over frames
+36–43 and recovered at frame 46 after two misses. The detector incorrectly labelled
+the character `bird` at frames 44–45, producing #003. A shot/gap also fragmented
+the person into separate IDs. This baseline does not establish tracking accuracy,
+handle all crossings/occlusions, or identify people.
+
+Measured tracker updates averaged **0.1035 ms/frame**. The matched comparison
+measured 5.27/5.38 processing FPS and 2.67/2.66 full end-to-end FPS with tracking
+off/on; timing variation does not demonstrate a speedup. The report includes
+average detections per frame, association times, and active-track statistics.
+See [algorithm evaluation, lifecycle, benchmark, trace commands, and limits](docs/phase3a.md).
+
+Detection finds/classifies boxes in each frame. Tracking associates those boxes
+and assigns temporary IDs. Counting would derive events or quantities from tracks
+and geometry; **object counting is not implemented**. Track creation and detection
+totals in diagnostic reports are not counts of unique physical objects.
 
 ## Detect objects in a video (headless)
 
@@ -39,7 +87,7 @@ anything or silently changing formats.
 
 The model loads once per video, warms up once (default: three passes), and performs
 one measured inference per frame. Frames are read sequentially with no GUI,
-preview, frame skipping, tracking, or audio output. Decoded dimensions and source
+preview, frame skipping, or audio output. Tracking is opt-in. Decoded dimensions and source
 FPS are preserved. `--max-frames N` stops after N frames; without it, processing
 continues until the decoder ends. `--runs` remains image-only. If source FPS is
 invalid/missing, supply `--output-fps 24` (or another known correct value).
@@ -138,6 +186,20 @@ JEV_GPU_TESTS=1 JEV_TEST_VIDEO=data/sintel-sample.mp4 \
 The sample is already present in the verified workspace; tests never download it.
 Without `JEV_TEST_VIDEO`, the video GPU test generates its own synthetic clip.
 
+Phase 3A passed **85 tests with GPU testing enabled**, preserving the original 57.
+Default discovery passes 82 and skips three CUDA integrations. Synthetic sequences
+cover multiple moving objects, association, misses, expiration, reset, categories,
+confirmation, deterministic ties, and the known crossing ambiguity. Tracking
+integration also requires the existing local Sintel clip:
+
+```bash
+JEV_GPU_TESTS=1 JEV_TRACK_VIDEO=data/sintel-sample.mp4 \
+  python -m unittest discover -s tests -v
+```
+
+That clip must contain overlapping detections across consecutive frames; the
+tracking GPU test checks actual ID persistence and never downloads sample media.
+
 ## Run the foundation
 
 Use the existing Jetson AI environment. No installation is required:
@@ -179,13 +241,16 @@ src/jetson_edge_vision/
   detection.py                       Approved checkpoint and reusable detector
   image_pipeline.py                  Image decoding, annotation, output, timing
   video_pipeline.py                  Sequential video processing and verification
+  tracking.py                        Session-local class-aware IoU tracker
  tests/test_foundation.py             Configuration, logging, and CLI tests
  tests/test_detection.py              Offline and opt-in CUDA detection tests
  tests/test_video.py                  Video/codec tests and CUDA integration
+ tests/test_tracking.py               Synthetic association and CUDA tracking tests
  docs/architecture.md                Module boundaries and phased roadmap
  docs/environment.md                 Dependencies and verification evidence
  docs/phase2a.md                      Model evaluation and GPU measurements
  docs/phase2b.md                      Video behavior, codecs, and GPU measurements
+ docs/phase3a.md                      Tracker evaluation, lifecycle, and measurements
 pyproject.toml                       Package metadata and optional CLI entry point
 ```
 
@@ -222,7 +287,8 @@ The verified `hello-gpu` and `camera-gpu` projects remain untouched.
 1. Foundation: configuration, logs, diagnostics, tests — verified.
 2. Phases 2A/2B: PyTorch CUDA image/video-file detection, measured latency,
    annotated output, and tests — verified.
-3. Add multi-object tracking with temporary, session-scoped IDs.
+3. Phase 3A: optional IoU tracking with temporary session-scoped IDs — verified;
+   broader tracking accuracy assessment remains future work.
 4. Add tested line/region counting and stored events.
 5. Integrate CSI capture and document camera limitations.
 6. Add a local API and simple dashboard.
@@ -230,7 +296,8 @@ The verified `hello-gpu` and `camera-gpu` projects remain untouched.
 8. Prepare documentation, licensing, examples, and release checks for GitHub.
 
 See [architecture](docs/architecture.md), [Phase 2A evidence](docs/phase2a.md), and
-[Phase 2B evidence](docs/phase2b.md). Phase 3 has not been started.
+[Phase 2B evidence](docs/phase2b.md), and [Phase 3A evidence](docs/phase3a.md).
+Counting and subsequent phases have not been started.
 
 ## Repository hygiene and licensing
 

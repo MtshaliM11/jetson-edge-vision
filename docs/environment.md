@@ -102,3 +102,23 @@ tests and a separate CUDA video integration. The original environment diagnostic
 also passed again. The sandbox still blocks NVIDIA memory-device access; approved
 host execution succeeded without repairs. No weights were redownloaded. Media,
 codec evidence, and reports remain local under ignored `data/` and `outputs/`.
+
+## Phase 3A verification (2026-10-17)
+
+Added an original standard-library IoU tracker without installing packages or
+changing the model, checkpoint, drivers, CUDA, JetPack, or AI library versions.
+The existing CUDA detector processes video frames as before. The sandbox still
+blocks NVIDIA memory-device access; approved host execution succeeded without
+environment repair.
+
+Matched 48-frame runs with tracking disabled/enabled used the same Sintel source,
+confidence 0.5, three warm-ups, mp4v output, and INFO logging. Tracker updates
+averaged 0.1035 ms/frame (4.9674 ms total). Mean model latency was 168.75/164.93 ms,
+processing FPS 5.27/5.38, and full end-to-end FPS 2.67/2.66 off/on. These noisy runs
+do not establish a speedup or real-time performance. Both outputs decoded all 48
+frames at 854x480 and 24 FPS. A separate DEBUG run verified ID persistence and
+revealed a class flip and fragmentation across shots; see [Phase 3A](phase3a.md).
+
+All 85 tests passed with actual GPU integrations enabled, including all 57 prior
+tests unchanged. The Phase 1 CUDA tensor/NMS/OpenCV diagnostic passed again.
+Tracking output, logs, comparisons, and previews remain under ignored `outputs/`.
