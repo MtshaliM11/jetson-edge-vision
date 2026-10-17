@@ -58,3 +58,27 @@ addition must check installed versions, ARM64 wheels, CUDA compatibility,
 transitive requirements, and licenses before any installation. Preserve the
 existing OpenCV/system integration and CUDA PyTorch installation. This phase
 installed nothing, downloaded no weights, and modified no drivers or system tools.
+
+## Phase 2A verification (2026-10-16)
+
+The same existing interpreter and library versions were reused. Read-only checks
+also confirmed Ubuntu 22.04.5 LTS and Torchvision's CUDA build value `12060`,
+matching CUDA 12.6. The NVIDIA release file reports L4T R36 revision 4.7; no
+JetPack, driver, CUDA, or library changes were made. No packages were installed.
+
+The user approved the official SSDLite320 MobileNetV3-Large COCO_V1 checkpoint.
+It was downloaded into ignored `models/`, verified against the official SHA256
+prefix, and loaded with `weights_only=True`. The example image, annotations,
+and JSON reports are under ignored `data/` and `outputs/`.
+
+Sandboxed network downloads failed DNS resolution; approved host execution
+resolved this. Sandboxed CUDA initialization failed with `NvRmMemInitNvmap` and
+NVIDIA memory-manager access errors. The same detector succeeded outside the
+sandbox on `cuda:0` (GPU name `Orin`), without any environment repair. CUDA failure
+never triggered CPU fallback.
+
+The actual image test detected a dog and saved a visually checked annotated image.
+The complete 28-test suite, including all eight original tests and the opt-in
+CUDA/known-class test, passed. The Phase 1 GPU diagnostic was rerun successfully
+after implementation. See [Phase 2A evidence](phase2a.md) for measured timings,
+reproduction commands, model limitations, and licensing notes.
