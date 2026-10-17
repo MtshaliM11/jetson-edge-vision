@@ -1,4 +1,4 @@
-"""Startup, explicit environment diagnostics, and opt-in image detection."""
+"""Startup, diagnostics, and opt-in image/video detection."""
 import argparse
 import json
 import sys
@@ -10,23 +10,31 @@ from .logging_utils import configure_logging
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Jetson Edge Vision image detection")
+    parser = argparse.ArgumentParser(description="Jetson Edge Vision image/video detection")
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--config", type=Path, help="Path to a JSON configuration")
     commands = parser.add_mutually_exclusive_group()
     commands.add_argument("--check-environment", action="store_true", help="Run tensor, NMS and OpenCV checks")
     commands.add_argument("--download-weights", action="store_true", help="Download the approved official COCO_V1 checkpoint, then exit")
     commands.add_argument("--image", type=Path, help="Input image file; inference never downloads weights")
-    parser.add_argument("--output", type=Path, help="New annotated image path (required with --image)")
+    commands.add_argument("--video", type=Path, help="Local MP4, AVI, or MOV file; headless sequential detection")
+    parser.add_argument("--output", type=Path, help="New annotated image/video path (required with --image or --video)")
     parser.add_argument("--weights", type=Path, help="COCO_V1 checkpoint path (default: models/ssdlite320_mobilenet_v3_large_coco-a79551df.pth)")
     parser.add_argument("--confidence", type=float, default=0.5, help="Minimum score, 0 to 1 (default: 0.5)")
-    parser.add_argument("--warmup", type=int, default=3, help="Unmeasured warm-up passes (default: 3)")
-    parser.add_argument("--runs", type=int, default=10, help="Measured inference passes (default: 10)")
+    parser.add_argument("--warmup", type=int, default=3, help="Unmeasured warm-up passes; once per video (default: 3)")
+    parser.add_argument("--runs", type=int, default=None, help="Image-only measured passes (default: 10); video always runs once per frame")
+    parser.add_argument("--max-frames", type=int, help="Video-only processing limit, >= 1")
+    parser.add_argument("--codec", help="Video output FourCC (defaults: mp4v for MP4/MOV, MJPG for AVI)")
+    parser.add_argument("--output-fps", type=float, help="Video output FPS override; required if source FPS is unknown")
     args = parser.parse_args(argv)
-    if args.image is not None and args.output is None:
-        parser.error("--image requires --output")
-    if args.output is not None and args.image is None:
-        parser.error("--output requires --image")
+    if (args.image is not None or args.video is not None) and args.output is None:
+        parser.error("--image or --video requires --output")
+    if args.output is not None and args.image is None and args.video is None:
+        parser.error("--output requires --image or --video")
+    if args.video is None and any(value is not None for value in (args.max_frames, args.codec, args.output_fps)):
+        parser.error("--max-frames, --codec, and --output-fps require --video")
+    if args.video is not None and args.runs is not None:
+        parser.error("--runs is image-only; video performs exactly one measured inference per frame")
     logger = configure_logging()
     try:
         config = load_config(args.config)
@@ -34,12 +42,22 @@ def main(argv: list[str] | None = None) -> int:
         if args.download_weights:
             from .detection import DEFAULT_WEIGHTS, download_weights
             print(json.dumps(download_weights(args.weights or DEFAULT_WEIGHTS), indent=2))
+        elif args.video is not None:
+            from .detection import DEFAULT_WEIGHTS
+            from .video_pipeline import detect_video
+            result = detect_video(args.video, args.output, device=config.device,
+                                  confidence=args.confidence, weights_path=args.weights or DEFAULT_WEIGHTS,
+                                  warmup=args.warmup, max_frames=args.max_frames,
+                                  codec=args.codec, output_fps=args.output_fps)
+            print(json.dumps(result, indent=2))
+            logger.info("Video detection completed; device=%s; frames=%d; processing_fps=%.2f",
+                        config.device, result["frames_processed"], result["processing_fps"])
         elif args.image is not None:
             from .detection import DEFAULT_WEIGHTS
             from .image_pipeline import detect_image
             result = detect_image(args.image, args.output, device=config.device,
                                   confidence=args.confidence, weights_path=args.weights or DEFAULT_WEIGHTS,
-                                  warmup=args.warmup, runs=args.runs)
+                                  warmup=args.warmup, runs=args.runs if args.runs is not None else 10)
             print(json.dumps(result, indent=2))
             logger.info("Image detection completed; device=%s; detections=%d", config.device, len(result["detections"]))
         elif args.check_environment:

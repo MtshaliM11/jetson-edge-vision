@@ -4,11 +4,65 @@ Local, GPU-accelerated computer vision for NVIDIA Jetson Orin Nano Super.
 The intended system combines detection, tracking, counting, and a local monitoring
 interface without cloud services for core processing.
 
-**Status: Phase 2A image detection verified on the Orin GPU.**
+**Status: Phase 2B image and video-file detection verified on the Orin GPU.**
 
 SSDLite320 MobileNetV3-Large COCO_V1 runs with the existing PyTorch/Torchvision
 installation. It produces bounding boxes, COCO class names, confidence scores,
-an annotated image, and JSON measurements. No additional packages are required.
+annotated images/videos, and JSON measurements. No additional packages are required.
+
+## Detect objects in a video (headless)
+
+Use the existing environment and downloaded Phase 2A checkpoint:
+
+```bash
+cd ~/jetson-projects/ai/projects/jetson-edge-vision
+source ~/jetson-projects/ai/ai-env/bin/activate
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+mkdir -p outputs
+
+python -m jetson_edge_vision --config configs/default.json \
+  --video /path/to/input.mp4 --output outputs/video-detected.mp4 \
+  --confidence 0.5 --warmup 3 > outputs/video-report.json
+
+# Short test; select new filenames for each run:
+python -m jetson_edge_vision --video /path/to/input.mov \
+  --output outputs/short-test.avi --codec MJPG --max-frames 48 \
+  --confidence 0.5 > outputs/short-test-report.json
+```
+
+MP4, AVI, and MOV inputs are supported when the installed OpenCV can decode their
+particular codec. Actual write/decode probes passed for MP4/MOV with `mp4v` and
+AVI with `MJPG`; `avc1` also passed an MP4 probe. Defaults are `mp4v` for MP4/MOV
+and `MJPG` for AVI. `--codec FOURCC` selects an installed alternative; an
+unavailable encoder produces an error suggesting AVI/MJPG, without installing
+anything or silently changing formats.
+
+The model loads once per video, warms up once (default: three passes), and performs
+one measured inference per frame. Frames are read sequentially with no GUI,
+preview, frame skipping, tracking, or audio output. Decoded dimensions and source
+FPS are preserved. `--max-frames N` stops after N frames; without it, processing
+continues until the decoder ends. `--runs` remains image-only. If source FPS is
+invalid/missing, supply `--output-fps 24` (or another known correct value).
+Overriding valid source FPS changes output playback duration.
+
+The JSON report separates source playback FPS, synchronized inference latency,
+processing-loop FPS, and full end-to-end FPS including initialization and output
+verification. Total detections are repeated observations across frames, not unique
+objects or a counting feature. The 48-frame, 24 FPS verification clip measured
+**4.93 processing FPS**, **180.13 ms mean inference**, and **2.52 full end-to-end
+FPS**. These measurements do not establish real-time processing.
+
+Outputs are encoded in temporary storage, fully decoded to verify every frame,
+then published without overwriting existing files. Failures before publication
+and Ctrl+C discard the staged video and release readers/writers. Choose a new
+output filename to repeat a run; shell redirection can still overwrite JSON reports.
+Keep videos/reports under ignored `data/` and `outputs/`.
+
+Known limits include omitted audio, constant-frame-rate output, backend-dependent
+rotation metadata, and conservative handling of decoder failures. Odd dimensions
+and known non-square pixels are rejected to avoid silently changing geometry.
+See [Phase 2B architecture, codec evidence, troubleshooting, sample attribution,
+and full benchmark](docs/phase2b.md).
 
 ## Detect objects in an image
 
@@ -71,6 +125,19 @@ An explicitly enabled GPU test fails if CUDA or weights are unavailable; it does
 not download assets or fall back to CPU. Optional `JEV_WEIGHTS` selects the
 checkpoint location. All eight original foundation tests are preserved.
 
+The complete Phase 2B suite passed **57 tests with GPU testing enabled**, including
+all 28 existing tests. Default discovery passes 55 and skips two GPU integrations.
+Synthetic clips verify video decoding/encoding and mocked frame inference without
+the GPU. To also verify the local licensed Sintel excerpt:
+
+```bash
+JEV_GPU_TESTS=1 JEV_TEST_VIDEO=data/sintel-sample.mp4 \
+  JEV_VIDEO_EXPECT_CLASS=person python -m unittest discover -s tests -v
+```
+
+The sample is already present in the verified workspace; tests never download it.
+Without `JEV_TEST_VIDEO`, the video GPU test generates its own synthetic clip.
+
 ## Run the foundation
 
 Use the existing Jetson AI environment. No installation is required:
@@ -111,11 +178,14 @@ src/jetson_edge_vision/
   diagnostics.py                     Explicit environment checks
   detection.py                       Approved checkpoint and reusable detector
   image_pipeline.py                  Image decoding, annotation, output, timing
+  video_pipeline.py                  Sequential video processing and verification
  tests/test_foundation.py             Configuration, logging, and CLI tests
  tests/test_detection.py              Offline and opt-in CUDA detection tests
+ tests/test_video.py                  Video/codec tests and CUDA integration
  docs/architecture.md                Module boundaries and phased roadmap
  docs/environment.md                 Dependencies and verification evidence
  docs/phase2a.md                      Model evaluation and GPU measurements
+ docs/phase2b.md                      Video behavior, codecs, and GPU measurements
 pyproject.toml                       Package metadata and optional CLI entry point
 ```
 
@@ -144,14 +214,14 @@ GStreamer integration. No packages or system settings were changed for Phase 1.
 See [environment verification](docs/environment.md) for measured checks.
 
 The CSI camera has an unresolved purple/magenta cast. Phase 1 does not open it.
-Phase 2A processes image files only; camera integration is Phase 5.
+Phase 2A processes images and Phase 2B local video files; camera integration is Phase 5.
 The verified `hello-gpu` and `camera-gpu` projects remain untouched.
 
 ## Roadmap
 
 1. Foundation: configuration, logs, diagnostics, tests — verified.
-2. Phase 2A: PyTorch CUDA image detection, measured latency, annotated output,
-   and tests — verified. Video-file processing remains a separate future increment.
+2. Phases 2A/2B: PyTorch CUDA image/video-file detection, measured latency,
+   annotated output, and tests — verified.
 3. Add multi-object tracking with temporary, session-scoped IDs.
 4. Add tested line/region counting and stored events.
 5. Integrate CSI capture and document camera limitations.
@@ -159,7 +229,8 @@ The verified `hello-gpu` and `camera-gpu` projects remain untouched.
 7. Benchmark and evaluate TensorRT/FP16 using measured results.
 8. Prepare documentation, licensing, examples, and release checks for GitHub.
 
-See [architecture](docs/architecture.md) and [Phase 2A evidence](docs/phase2a.md).
+See [architecture](docs/architecture.md), [Phase 2A evidence](docs/phase2a.md), and
+[Phase 2B evidence](docs/phase2b.md). Phase 3 has not been started.
 
 ## Repository hygiene and licensing
 

@@ -82,3 +82,23 @@ The complete 28-test suite, including all eight original tests and the opt-in
 CUDA/known-class test, passed. The Phase 1 GPU diagnostic was rerun successfully
 after implementation. See [Phase 2A evidence](phase2a.md) for measured timings,
 reproduction commands, model limitations, and licensing notes.
+
+## Phase 2B verification (2026-10-17)
+
+Reused the existing interpreter, CUDA checkpoint, and all installed libraries.
+No Python/system packages, drivers, camera settings, CUDA, or JetPack were changed.
+MP4/mp4v, MOV/mp4v, AVI/MJPG, and MP4/avc1 probe files each encoded and decoded
+three frames successfully through the existing OpenCV FFmpeg backend. GStreamer
+support remains intact; this does not imply GPU-accelerated video decoding/encoding.
+
+A licensed Sintel trailer excerpt (48 frames, 854x480, 24 FPS) was processed with
+the unchanged detector on `cuda:0`, FP32. All 48 annotated output frames decoded
+successfully, with the same dimensions/FPS. Processing-loop throughput was 4.93
+FPS, mean synchronized inference 180.13 ms, and full end-to-end throughput 2.52
+FPS. See [Phase 2B](phase2b.md) for the exact boundaries and sample attribution.
+
+All 57 tests passed with GPU testing enabled, including the unchanged Phase 1/2A
+tests and a separate CUDA video integration. The original environment diagnostic
+also passed again. The sandbox still blocks NVIDIA memory-device access; approved
+host execution succeeded without repairs. No weights were redownloaded. Media,
+codec evidence, and reports remain local under ignored `data/` and `outputs/`.
