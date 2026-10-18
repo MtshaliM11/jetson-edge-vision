@@ -116,6 +116,38 @@ to existing inference samples. Aggregate track statistics are diagnostic state,
 not object counting. The detector, configuration schema, and original tests remain
 unchanged. Tracking controls are CLI flags rather than new JSON config keys.
 
+## Phase 3B evaluation boundary
+
+```text
+labelled synthetic detections ---+
+                                +-> unchanged IoUTracker -> evaluation diagnostics
+saved CUDA detection trace -----+             |                      |
+  (saved IDs removed)                         |                JSON report
+       + optional reviewed labels ------------+ (scorer only)
+```
+
+`evaluation_scenarios.py` defines deterministic physical identities and detection
+observations separately. `tracking_evaluation.py` is a separate module CLI and
+uses only the standard library. It runs fresh tracker instances over identical
+sequences for a fixed parameter grid; no production module/default was changed.
+Truth labels and previous tracking IDs are stripped before tracker input.
+
+The scorer has explicitly defined identity-change, extra-ID/fragmentation-proxy,
+identity-merge, category-error, visible-miss, and false-born-track diagnostics.
+These are custom evaluation counts, not standard MOTChallenge/IDF1/HOTA scores.
+Without reviewed labels, identity/accuracy diagnostics are null; only observed
+lifecycle/status records and timings are produced. Replay timing excludes CUDA,
+decode, annotation, and encoding; companion pipeline reports preserve actual video
+performance as separately identified evidence. Trace/scenario/evaluator/tracker
+hashes provide provenance. Manual labels require full frame coverage, explicit
+review, and the exact trace hash. See [Phase 3B](phase3b.md) for the schema and limits.
+
+The offline evaluator loads short sequences/traces and retains timing samples and
+observation histories for diagnostics; it is not the bounded-frame streaming
+production pipeline. Raw media, labels, traces, and generated reports belong in
+ignored `data/` or `outputs/`, not repository fixtures. Synthetic scenarios and
+the authored evaluation report are safe to review as repository source/docs.
+
 ## Planned processing boundaries
 
 ```text
@@ -146,6 +178,7 @@ Phase 2B distinguishes synchronized per-frame inference, processing-loop through
 and full end-to-end throughput. These measurements do not establish real-time
 streaming capability. Phase 2A's repeated image passes remain a separate baseline.
 
-The initial detector evaluation, CUDA image/video paths, and baseline IoU tracking
-are complete without new dependencies. Further tracking evaluation, counting,
-TensorRT, camera capture, and the dashboard remain future work.
+The initial detector evaluation, CUDA image/video paths, baseline IoU tracking,
+and controlled tracking evaluation are complete without new dependencies.
+Representative labelled real-video assessment, counting, TensorRT, camera capture,
+and the dashboard remain future work.

@@ -4,11 +4,54 @@ Local, GPU-accelerated computer vision for NVIDIA Jetson Orin Nano Super.
 The intended system combines detection, tracking, counting, and a local monitoring
 interface without cloud services for core processing.
 
-**Status: Phase 3A optional video tracking verified on the Orin GPU.**
+**Status: Phase 3B reproducible tracking evaluation complete; tracker/defaults preserved.**
 
 SSDLite320 MobileNetV3-Large COCO_V1 runs with the existing PyTorch/Torchvision
 installation. It produces bounding boxes, COCO class names, confidence scores,
 annotated images/videos, and JSON measurements. No additional packages are required.
+
+## Evaluate tracking (no GPU required for replay)
+
+Phase 3B adds a separate standard-library evaluator; production detection,
+tracking, video processing, CLI, and defaults are unchanged. It runs **17 labelled
+synthetic scenarios × 27 tracking configurations**, with fresh tracker state per
+repeat. Reports distinguish detector errors from association diagnostics and
+never infer accuracy from unlabelled clips.
+
+After activating the environment and setting `PYTHONPATH` as below:
+
+```bash
+mkdir -p outputs
+python -m jetson_edge_vision.tracking_evaluation \
+  --repeats 10 --output outputs/tracking-evaluation-repeat.json
+
+# Replay an existing saved trace, with its companion pipeline report:
+python -m jetson_edge_vision.tracking_evaluation --trace-only \
+  --trace outputs/phase3b-sintel-default.jsonl \
+  --video-report outputs/phase3b-sintel-default.json \
+  --repeats 10 --output outputs/trace-evaluation-repeat.json
+```
+
+Use new report filenames; existing outputs are protected. `--baseline-only`
+selects the unchanged default configuration. Replay uses cached detection boxes,
+strips saved track IDs, and imports no Torch/OpenCV. Its throughput is **CPU replay
+throughput, not video FPS**. Synthetic labels never enter the tracker. Optional
+reviewed manual annotations can enable labelled trace scoring; without them,
+ID-switch, fragmentation-proxy, and false-track accuracy fields are `null`.
+
+The synthetic baseline preserves IDs in ordinary motion, independent objects,
+and short detection gaps. It exposes switches at ambiguous crossings, fragmentation
+after long gaps/jumps, class-flip effects, stale-ID inheritance after scene changes,
+and confirmation of persistent false detections. Two locally available Sintel
+sections were also processed on CUDA; no media was downloaded. Both remain
+unlabelled animated examples, not an accuracy dataset.
+
+Keep **IoU 0.3 / max missed 5 / minimum hits 2** as the existing evaluation baseline.
+Lower IoU, longer retention, and delayed confirmation each help specific scenarios
+and hurt others; no general improvement is established. See the
+[Phase 3B report](docs/phase3b.md) for definitions, parameter tables, measured
+timings, real-video observations, annotation format, and exact reproduction steps.
+Counting remains unimplemented.
 
 ## Track objects in a video (optional)
 
@@ -200,6 +243,12 @@ JEV_GPU_TESTS=1 JEV_TRACK_VIDEO=data/sintel-sample.mp4 \
 That clip must contain overlapping detections across consecutive frames; the
 tracking GPU test checks actual ID persistence and never downloads sample media.
 
+Phase 3B passed **113 tests with GPU integrations enabled**, preserving all 85
+previous tests unchanged. Default discovery passes 109 and skips four GPU tests.
+The new tests verify diagnostic definitions, parameter tradeoffs, trace integrity,
+manual-label binding, absent-ground-truth behavior, repeatability, and replay of
+an actual CUDA-generated trace. Existing test commands also run the new tests.
+
 ## Run the foundation
 
 Use the existing Jetson AI environment. No installation is required:
@@ -242,15 +291,19 @@ src/jetson_edge_vision/
   image_pipeline.py                  Image decoding, annotation, output, timing
   video_pipeline.py                  Sequential video processing and verification
   tracking.py                        Session-local class-aware IoU tracker
+  evaluation_scenarios.py            Original labelled synthetic detections
+  tracking_evaluation.py             Independent CPU evaluation/report command
  tests/test_foundation.py             Configuration, logging, and CLI tests
  tests/test_detection.py              Offline and opt-in CUDA detection tests
  tests/test_video.py                  Video/codec tests and CUDA integration
  tests/test_tracking.py               Synthetic association and CUDA tracking tests
+ tests/test_tracking_evaluation.py    Scoring, replay, annotations, CUDA trace contract
  docs/architecture.md                Module boundaries and phased roadmap
  docs/environment.md                 Dependencies and verification evidence
  docs/phase2a.md                      Model evaluation and GPU measurements
  docs/phase2b.md                      Video behavior, codecs, and GPU measurements
  docs/phase3a.md                      Tracker evaluation, lifecycle, and measurements
+ docs/phase3b.md                      Reproducible evaluation methodology and results
 pyproject.toml                       Package metadata and optional CLI entry point
 ```
 
@@ -287,8 +340,8 @@ The verified `hello-gpu` and `camera-gpu` projects remain untouched.
 1. Foundation: configuration, logs, diagnostics, tests — verified.
 2. Phases 2A/2B: PyTorch CUDA image/video-file detection, measured latency,
    annotated output, and tests — verified.
-3. Phase 3A: optional IoU tracking with temporary session-scoped IDs — verified;
-   broader tracking accuracy assessment remains future work.
+3. Phase 3A: optional IoU tracking — verified. Phase 3B: controlled evaluation and
+   parameter replay — complete; representative labelled real-video accuracy remains unestablished.
 4. Add tested line/region counting and stored events.
 5. Integrate CSI capture and document camera limitations.
 6. Add a local API and simple dashboard.
@@ -296,7 +349,8 @@ The verified `hello-gpu` and `camera-gpu` projects remain untouched.
 8. Prepare documentation, licensing, examples, and release checks for GitHub.
 
 See [architecture](docs/architecture.md), [Phase 2A evidence](docs/phase2a.md), and
-[Phase 2B evidence](docs/phase2b.md), and [Phase 3A evidence](docs/phase3a.md).
+[Phase 2B evidence](docs/phase2b.md), [Phase 3A evidence](docs/phase3a.md), and
+[Phase 3B evaluation](docs/phase3b.md).
 Counting and subsequent phases have not been started.
 
 ## Repository hygiene and licensing

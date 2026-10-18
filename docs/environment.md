@@ -122,3 +122,28 @@ revealed a class flip and fragmentation across shots; see [Phase 3A](phase3a.md)
 All 85 tests passed with actual GPU integrations enabled, including all 57 prior
 tests unchanged. The Phase 1 CUDA tensor/NMS/OpenCV diagnostic passed again.
 Tracking output, logs, comparisons, and previews remain under ignored `outputs/`.
+
+## Phase 3B verification (2026-10-18)
+
+Added only standard-library evaluation code, synthetic scenarios, tests, and
+documentation. The detector, tracker, annotation, video pipeline, application CLI,
+configuration, dependencies, and original 85 tests remain unchanged. No packages,
+CUDA/JetPack/driver settings, or model weights were installed/replaced/downloaded.
+
+Replayed 17 labelled synthetic scenarios across 27 configurations, 10 repeats each,
+and replayed saved detections from two local Sintel sections. No additional media
+was downloaded. A second 48-frame excerpt was derived from the already local
+licensed trailer and kept under ignored `data/` with attribution.
+
+Fresh host-CUDA runs on the main excerpt used defaults (0.3/5/2) and a comparison
+setting (0.1/10/3), with identical detection-sequence hashes. Mean tracker update
+times were 0.1139/0.1279 ms; loop throughput 4.78/4.60 FPS; end-to-end 2.37/2.11 FPS.
+The second excerpt at defaults measured 0.0700 ms/update and 4.92 loop FPS.
+These are uncontrolled functional measurements, not accuracy or speedup claims.
+All three encoded outputs decoded 48 frames at 854x480 and 24 FPS.
+
+All 113 tests passed with actual CUDA integrations enabled, including the original
+85 unchanged tests and the new trace-evaluation integration. The original tensor,
+CUDA NMS, OpenCV resize, and GStreamer diagnostic passed again. Host execution was
+used because the sandbox's NVIDIA access restriction is already established.
+See [Phase 3B](phase3b.md) for methodology, evidence paths, and recommendations.
