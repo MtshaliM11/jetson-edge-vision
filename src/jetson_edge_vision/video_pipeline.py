@@ -14,6 +14,8 @@ import time
 from .detection import DEFAULT_WEIGHTS, MODEL_NAME, SSDLiteDetector, validate_options
 from .image_pipeline import annotate_image
 from .tracking import IoUTracker, TrackingConfig
+from .counting import CountingConfig, LineCounter
+from .counting_annotation import annotate_counting
 
 
 DEFAULT_CODECS = {".mp4": "mp4v", ".mov": "mp4v", ".avi": "MJPG"}
@@ -88,8 +90,9 @@ def detect_video(video_path: Path, output_path: Path, *, device: str = "cuda",
                  confidence: float = 0.5, weights_path: Path = DEFAULT_WEIGHTS,
                  warmup: int = 3, max_frames: int | None = None,
                  codec: str | None = None, output_fps: float | None = None,
-                 tracking: bool = False, tracking_config: TrackingConfig | None = None) -> dict:
-    """Process one frame at a time. Only scalar latency samples accumulate.
+                 tracking: bool = False, tracking_config: TrackingConfig | None = None,
+                 counting_config: CountingConfig | None = None) -> dict:
+    """Process one frame at a time; retain scalar timings and optional crossing events.
 
     Output is staged next to its destination and published without replacement
     only after decoding every encoded frame. Exceptions/interrupts discard it.
@@ -102,6 +105,11 @@ def detect_video(video_path: Path, output_path: Path, *, device: str = "cuda",
         raise ValueError("tracking_config must be a TrackingConfig")
     if not tracking and tracking_config is not None:
         raise ValueError("Tracking options require tracking to be enabled")
+    if counting_config is not None:
+        if not isinstance(counting_config, CountingConfig):
+            raise ValueError("counting_config must be a CountingConfig")
+        if not tracking:
+            raise ValueError("Counting requires tracking to be enabled")
     tracker = IoUTracker(tracking_config) if tracking else None
     logger = logging.getLogger("jetson_edge_vision")
     if max_frames is not None and (type(max_frames) is not int or max_frames < 1):
@@ -147,6 +155,7 @@ def detect_video(video_path: Path, output_path: Path, *, device: str = "cuda",
         if size[0] % 2 or size[1] % 2:
             raise ValueError("Video dimensions must be even; refusing codec truncation that would change the input geometry")
         source["decoded_width"], source["decoded_height"] = size
+        counter = LineCounter(size, counting_config) if counting_config is not None else None
         warnings = []
         if source["fps"] is None:
             warnings.append("Source FPS unavailable; using the explicit output FPS")
@@ -171,6 +180,7 @@ def detect_video(video_path: Path, output_path: Path, *, device: str = "cuda",
             warmup_ms = (time.perf_counter() - warmup_started) * 1000
             samples = array("d")
             association_samples = array("d")
+            counting_samples = array("d")
             peak_active_tracks = 0
             visible_tracks = 0
             categories = Counter()
@@ -190,7 +200,14 @@ def detect_video(video_path: Path, output_path: Path, *, device: str = "cuda",
                             logger.debug("Tracking frame: %s", json.dumps({
                                 "frame_index": processed, "detections": result["detections"],
                             }))
+                    if counter is not None:
+                        counting_started = time.perf_counter()
+                        counter.update(tracker.tracks, processed,
+                                       processed / source["fps"] if source["fps"] else None)
+                        counting_samples.append((time.perf_counter() - counting_started) * 1000)
                     annotated = annotate_image(frame, result["detections"])
+                    if counter is not None:
+                        annotate_counting(annotated, counter)
                     if writer.write(annotated) is False:
                         raise OSError(f"Video writer failed at frame {processed}")
                     samples.append(result["inference"]["mean_ms"])
@@ -249,6 +266,16 @@ def detect_video(video_path: Path, output_path: Path, *, device: str = "cuda",
                     "mean_ms": statistics.mean(association_samples) if association_samples else 0.,
                     "median_ms": statistics.median(association_samples) if association_samples else 0.,
                     "max_ms": max(association_samples) if association_samples else 0.,
+                },
+            },
+            "counting": {
+                **(counter.report() if counter is not None else {"enabled": False}),
+                "processing": {
+                    "measured_frames": len(counting_samples),
+                    "total_ms": sum(counting_samples),
+                    "mean_ms": statistics.mean(counting_samples) if counting_samples else 0.,
+                    "median_ms": statistics.median(counting_samples) if counting_samples else 0.,
+                    "max_ms": max(counting_samples) if counting_samples else 0.,
                 },
             },
             "inference": {"measured_frames": len(samples), "mean_ms": statistics.mean(samples),

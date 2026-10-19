@@ -32,7 +32,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--track-iou", type=float, help="Tracking association IoU in (0, 1] (default: 0.3)")
     parser.add_argument("--track-max-missed", type=int, help="Retain tracks for this many missed frames (default: 5)")
     parser.add_argument("--track-min-hits", type=int, help="Consecutive observations required for confirmation (default: 2)")
+    parser.add_argument("--count", action="store_true", help="Enable line counting; requires --video --track")
+    parser.add_argument("--count-line", help="Normalized X1,Y1,X2,Y2; implies counting (default: 0.5,0.1,0.5,0.9)")
+    parser.add_argument("--count-hysteresis", type=float, help="Counting deadband distance in pixels (default: 2)")
     args = parser.parse_args(argv)
+    counting_enabled = args.count or args.count_line is not None
+    if counting_enabled and (args.video is None or not args.track):
+        parser.error("Counting requires --video and --track")
+    if args.count_hysteresis is not None and not counting_enabled:
+        parser.error("--count-hysteresis requires --count or --count-line")
+    counting_kwargs = {}
+    if counting_enabled:
+        from .counting import CountingConfig
+        try:
+            line = tuple(float(value) for value in args.count_line.split(",")) if args.count_line is not None else (.5, .1, .5, .9)
+            counting_kwargs["counting_config"] = CountingConfig(
+                line=line, hysteresis_px=args.count_hysteresis if args.count_hysteresis is not None else 2.)
+        except ValueError as exc:
+            parser.error(str(exc))
     if (args.image is not None or args.video is not None) and args.output is None:
         parser.error("--image or --video requires --output")
     if args.output is not None and args.image is None and args.video is None:
@@ -67,7 +84,7 @@ def main(argv: list[str] | None = None) -> int:
             result = detect_video(args.video, args.output, device=config.device,
                                   confidence=args.confidence, weights_path=args.weights or DEFAULT_WEIGHTS,
                                   warmup=args.warmup, max_frames=args.max_frames,
-                                  codec=args.codec, output_fps=args.output_fps, **tracking_kwargs)
+                                  codec=args.codec, output_fps=args.output_fps, **tracking_kwargs, **counting_kwargs)
             print(json.dumps(result, indent=2))
             logger.info("Video detection completed; device=%s; frames=%d; processing_fps=%.2f",
                         config.device, result["frames_processed"], result["processing_fps"])

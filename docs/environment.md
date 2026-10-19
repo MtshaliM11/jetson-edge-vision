@@ -147,3 +147,27 @@ All 113 tests passed with actual CUDA integrations enabled, including the origin
 CUDA NMS, OpenCV resize, and GStreamer diagnostic passed again. Host execution was
 used because the sandbox's NVIDIA access restriction is already established.
 See [Phase 3B](phase3b.md) for methodology, evidence paths, and recommendations.
+
+## Phase 4A verification (2026-10-19)
+
+Used the existing Python 3.10.12 ARM64 virtual environment at
+`~/jetson-projects/ai/ai-env`, PyTorch 2.8.0, Torchvision 0.23.0, CUDA 12.6,
+NumPy 1.26.4 and host OpenCV 4.8.0 with GStreamer 1.20.3. No dependency,
+driver, camera, CUDA, JetPack, weights, or system configuration changes were made.
+Use `PYTHONPATH=src` for this uninstalled source checkout; the first test command
+without it failed at import, then the original 113 tests passed with four expected
+GPU skips before implementation.
+
+The sandbox again blocked NVIDIA device access (`NvRmMemInitNvmap` / CUDA unknown
+error). Host execution succeeded: CUDA available, GPU `Orin`, tensor sum **6.0**,
+CUDA NMS **[0]**, OpenCV resize **[4,4,3]**, and GStreamer enabled. No CPU fallback
+was used. The full updated suite passed **154/154 tests with CUDA enabled**,
+including all original 113 tests unchanged. Default discovery passed 149 and
+skipped five opt-in GPU integrations. The CUDA suite printed an NVIDIA allocation
+warning but completed successfully; this is not evidence of measured peak memory.
+
+Phase 4A measurements use the existing local Sintel clips and approved pretrained
+weights. Generated reports/videos remain under ignored `outputs/phase4a/`.
+See [Phase 4A](phase4a.md) for benchmark results, exact commands, media limitations,
+and the separate synthetic multi-object functional checks. Synthetic correctness
+does not establish field accuracy or real-time throughput.

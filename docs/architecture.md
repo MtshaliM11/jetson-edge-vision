@@ -163,9 +163,10 @@ image / video / CSI source -> detector -> tracker -> counter -> analytics
 Acquisition will own capture handles, frame timestamps, end-of-stream handling,
 and cleanup. The detector will consume frames and return class, confidence, and
 bounding-box data without owning camera capture. The tracker consumes
-per-frame detections and maintains temporary session IDs. Counting will consume
-tracks and configured geometry; synthetic trajectories will verify crossings,
-entry/exit events, and duplicate suppression independently of inference.
+per-frame detections and maintains temporary session IDs. Phase 4A counting consumes
+tracks and configured line geometry; synthetic trajectories verify directional
+line crossings and duplicate suppression independently of inference. Region-based
+entry/exit counting remains future work.
 
 Persistence will store events rather than sit inside detector code. The API will
 expose application state; dashboard code will not own inference or counting.
@@ -180,5 +181,39 @@ streaming capability. Phase 2A's repeated image passes remain a separate baselin
 
 The initial detector evaluation, CUDA image/video paths, baseline IoU tracking,
 and controlled tracking evaluation are complete without new dependencies.
-Representative labelled real-video assessment, counting, TensorRT, camera capture,
+Representative labelled real-video assessment, region counting, TensorRT, camera capture,
 and the dashboard remain future work.
+
+## Phase 4A counting boundary
+
+```text
+current frame -> unchanged CUDA detector -> unchanged optional IoUTracker
+                                                      |
+                                        optional LineCounter.update(tracker.tracks)
+                                                      |
+                                          events + category/direction totals
+                                                      |
+                            annotate_image -> annotate_counting -> writer + JSON
+```
+
+`counting.py` is dependency-free and consumes existing immutable `Track` snapshots;
+it performs no inference and assigns no IDs. Every confirmed, current observation
+has independent center/side/intersection history keyed by ID and category/first
+frame identity. Finite consecutive-motion intersections plus a pixel deadband
+produce deterministic, separate events, including multiple events per frame.
+No new tracked-object cap is introduced. A missed observation breaks counting
+continuity; expiration prunes state. Resets must accompany tracker resets.
+
+`CountingConfig` owns normalized endpoints, line identifier and hysteresis.
+`counting_annotation.py` owns the compact line/totals overlay, reusing the original
+box, score and ID rendering. The video pipeline instantiates the counter only when
+a config is supplied, requires tracking, updates after association and before
+annotation, and adds a separate counting latency summary and events to JSON.
+`--count` uses defaults; `--count-line` enables a custom line; both require
+`--video --track`. Existing modes, config schema and tracking defaults are preserved.
+
+Only events and scalar timings accumulate; full frames and GPU tensors do not.
+Estimated source-video time is explicitly distinct from wall-clock time. Missed
+crossings, switches and classification errors remain limitations. Exact geometry,
+re-arm/gap policy, report schema, tests and actual GPU measurements are documented
+in [Phase 4A](phase4a.md).
