@@ -1,371 +1,236 @@
 # Jetson Edge Vision
 
-Local, GPU-accelerated computer vision for NVIDIA Jetson Orin Nano Super.
-The intended system combines detection, tracking, counting, and a local monitoring
-interface without cloud services for core processing.
+**On-device object detection, video tracking, and reproducible evaluation on NVIDIA Jetson Orin Nano Super.**
 
-**Status: Phase 3B reproducible tracking evaluation complete; tracker/defaults preserved.**
+Jetson Edge Vision is a Python computer-vision project built to explore practical **edge AI engineering**: running pretrained object detection locally on NVIDIA Jetson hardware, turning video frames into annotated results, associating detections across frames, and evaluating where tracking works—and where it fails.
 
-SSDLite320 MobileNetV3-Large COCO_V1 runs with the existing PyTorch/Torchvision
-installation. It produces bounding boxes, COCO class names, confidence scores,
-annotated images/videos, and JSON measurements. No additional packages are required.
+The project deliberately prioritizes **measured performance, modular code, repeatable tests, and honest limitations** over unverified real-time claims.
 
-## Evaluate tracking (no GPU required for replay)
+> **Project status — Phase 3B complete.** CUDA image/video detection, optional class-aware IoU tracking, and controlled tracking evaluation are implemented. **113 tests passed** in the latest GPU-enabled verification. Object counting, live CSI camera integration, a web dashboard, and TensorRT optimization are **not implemented yet**.
 
-Phase 3B adds a separate standard-library evaluator; production detection,
-tracking, video processing, CLI, and defaults are unchanged. It runs **17 labelled
-synthetic scenarios × 27 tracking configurations**, with fresh tracker state per
-repeat. Reports distinguish detector errors from association diagnostics and
-never infer accuracy from unlabelled clips.
+**Explore:** [Quick start](#quick-start) · [What works](#what-works-today) · [Benchmarks](#measured-performance) · [Architecture](#architecture) · [Roadmap](#roadmap) · [Technical reports](#technical-reports)
 
-After activating the environment and setting `PYTHONPATH` as below:
+---
 
-```bash
-mkdir -p outputs
-python -m jetson_edge_vision.tracking_evaluation \
-  --repeats 10 --output outputs/tracking-evaluation-repeat.json
+## What works today
 
-# Replay an existing saved trace, with its companion pipeline report:
-python -m jetson_edge_vision.tracking_evaluation --trace-only \
-  --trace outputs/phase3b-sintel-default.jsonl \
-  --video-report outputs/phase3b-sintel-default.json \
-  --repeats 10 --output outputs/trace-evaluation-repeat.json
+| Capability | Current implementation |
+| --- | --- |
+| **Image detection** | SSDLite320 MobileNetV3-Large with COCO_V1 weights; COCO labels, confidence scores, bounding boxes, annotated image output |
+| **Video detection** | Sequential processing of local video files; annotated MP4/MOV/AVI output where codecs are available; JSON performance reports |
+| **GPU inference** | Explicit PyTorch CUDA FP32 inference on the Jetson Orin GPU; no silent fallback to CPU |
+| **Object tracking** | Optional, class-aware greedy IoU matching with session-local IDs, confirmation, missed-frame retention, and track expiration |
+| **Tracking evaluation** | Deterministic synthetic scenarios, parameter sweeps, saved-detection replay, and optional trace-bound reviewed labels |
+| **Reliability** | Input validation, protected output files, video-output verification, structured logging, and automated regression tests |
+
+The pretrained model covers **80 COCO object categories**, including people, vehicles, animals, and common household items. It cannot recognize arbitrary custom categories without changing or retraining the model.
+
+**Detection** finds objects within a frame. **Tracking** links likely matches across frames. **Counting unique objects or boundary crossings is future work**; per-frame detection totals are not unique-object counts.
+
+## Why this project?
+
+A model that successfully identifies an object in one image is only the beginning of a deployable computer-vision system. Edge deployments also need predictable file handling, GPU compatibility, resource-aware processing, stable identities, trustworthy measurements, and realistic failure analysis.
+
+Jetson Edge Vision explores those challenges on resource-constrained ARM64 hardware without requiring a cloud inference service. Its current tracker is intentionally simple, making it useful as an understandable baseline against which more advanced methods can later be compared.
+
+## Measured performance
+
+These are **measurements from the project’s NVIDIA Jetson Orin Nano Super**, not published model benchmarks or performance guarantees.
+
+| Verified workload | Result | Interpretation |
+| --- | --- | --- |
+| Single-image FP32 inference | **151.25 ms** mean inference over 10 measured passes after 3 warm-ups | Model inference, not total image processing time |
+| 48-frame video detection (854×480, 24 FPS source) | **180.13 ms** mean inference; **4.93 processing-loop FPS**; **2.52 end-to-end FPS** | End-to-end includes startup, model loading, warm-up, output encoding, and verification |
+| Same 48-frame clip with Phase 3A tracking enabled | **0.1035 ms/frame** mean tracker update; **5.38 processing-loop FPS**; **2.66 end-to-end FPS** | Tracker overhead was small relative to inference; separate-run variation is not a proven speedup |
+
+**Current limitation:** Processing is **slower than real-time 24 FPS playback** in these tests. GPU optimization and broader benchmarking are planned. Performance can vary with source content, system load, clocks, thermals, and configuration. See the [image](docs/phase2a.md), [video](docs/phase2b.md), and [tracking](docs/phase3a.md) reports for measurement boundaries.
+
+### Tracking evaluation, not just a demo
+
+Phase 3B runs **17 labelled synthetic scenarios × 27 tracker configurations × 10 repeats**, with fresh tracker state for each run. Results distinguish association errors from missed detections, category errors, and false-track behavior.
+
+- Ordinary motion and independent objects maintained consistent IDs in controlled cases.
+- An ambiguous crossing produced **two synthetic ID switches**.
+- Longer track retention helped recover a seven-frame disappearance but increased stale-ID inheritance risk.
+- Stronger confirmation delayed some short-lived false tracks without eliminating persistent false detections.
+- Unlabelled real videos do **not** receive fabricated accuracy scores; identity-related fields remain `null` without reviewed ground truth.
+
+The retained baseline is **IoU 0.3 / maximum missed frames 5 / minimum confirmation hits 2**. These are evaluation defaults, **not validated optimal settings** for real-world deployment. Full methods and results: [Phase 3B evaluation](docs/phase3b.md).
+
+## Architecture
+
+```mermaid
+flowchart TD
+    A[Image or local video file] --> B[OpenCV decoding]
+    B --> C[SSDLite320 MobileNetV3-Large]
+    C --> D[PyTorch CUDA inference]
+    D --> E[COCO detections: boxes, labels, scores]
+    E --> F{Tracking enabled?}
+    F -->|Yes| G[Class-aware IoU tracker]
+    F -->|No| H[Annotation and reports]
+    G --> H
+    H --> I[Annotated image or video]
+    H --> J[JSON timing and diagnostics]
+    K[Labelled synthetic scenarios / saved detection traces] --> L[Tracking evaluator]
+    L --> M[Reproducible evaluation reports]
 ```
 
-Use new report filenames; existing outputs are protected. `--baseline-only`
-selects the unchanged default configuration. Replay uses cached detection boxes,
-strips saved track IDs, and imports no Torch/OpenCV. Its throughput is **CPU replay
-throughput, not video FPS**. Synthetic labels never enter the tracker. Optional
-reviewed manual annotations can enable labelled trace scoring; without them,
-ID-switch, fragmentation-proxy, and false-track accuracy fields are `null`.
+The detector is reused across image and video processing; the video pipeline loads the model once per run. Tracking is opt-in and does not modify the detector. The separate evaluation module can replay saved detection traces **without running CUDA inference again**. [Detailed architecture](docs/architecture.md).
 
-The synthetic baseline preserves IDs in ordinary motion, independent objects,
-and short detection gaps. It exposes switches at ambiguous crossings, fragmentation
-after long gaps/jumps, class-flip effects, stale-ID inheritance after scene changes,
-and confirmation of persistent false detections. Two locally available Sintel
-sections were also processed on CUDA; no media was downloaded. Both remain
-unlabelled animated examples, not an accuracy dataset.
+## Hardware and software
 
-Keep **IoU 0.3 / max missed 5 / minimum hits 2** as the existing evaluation baseline.
-Lower IoU, longer retention, and delayed confirmation each help specific scenarios
-and hurt others; no general improvement is established. See the
-[Phase 3B report](docs/phase3b.md) for definitions, parameter tables, measured
-timings, real-video observations, annotation format, and exact reproduction steps.
-Counting remains unimplemented.
+This project has been **verified** on the following existing development environment—not packaged as a universal Jetson installer.
 
-## Track objects in a video (optional)
+| Component | Verified environment |
+| --- | --- |
+| Board | NVIDIA Jetson Orin Nano Super Developer Kit (ARM64) |
+| OS / Jetson Linux | Ubuntu 22.04.5 LTS / L4T R36.4.7 |
+| Python | 3.10.12 |
+| CUDA / GPU | CUDA 12.6 / NVIDIA Orin (`cuda:0`) |
+| PyTorch / Torchvision | 2.8.0 / 0.23.0 |
+| OpenCV | 4.8.0, built with GStreamer support |
+| Detector | Torchvision SSDLite320 MobileNetV3-Large, `COCO_V1` pretrained weights |
 
-Tracking uses an original class-aware greedy IoU baseline on the existing
-detections. It requires no new packages and does not replace or retrain the model.
-Activate the environment and set `PYTHONPATH` as in the video example below, then:
+**Important compatibility note:** The tested virtual environment uses a Jetson-compatible CUDA-enabled PyTorch build and reuses the host’s GStreamer-enabled OpenCV installation. A generic `pip install torch opencv-python` is **not** a verified recreation procedure and can break this particular setup. Review [environment notes](docs/environment.md) before changing libraries, JetPack, or camera drivers.
+
+## Quick start
+
+These instructions assume you already have a **working, compatible Jetson Python environment** containing the verified libraries above. They do not install or replace system components.
 
 ```bash
-mkdir -p outputs
-python -m jetson_edge_vision --video data/sintel-sample.mp4 \
-  --output outputs/tracked-rerun.mp4 --confidence 0.5 --warmup 3 \
-  --track --track-iou 0.3 --track-max-missed 5 --track-min-hits 2 \
-  > outputs/tracked-rerun.json
+git clone https://github.com/MtshaliM11/jetson-edge-vision.git
+cd jetson-edge-vision
 
-# Same source/options with tracking explicitly disabled:
-python -m jetson_edge_vision --video data/sintel-sample.mp4 \
-  --output outputs/untracked-rerun.mp4 --confidence 0.5 --warmup 3 \
-  --no-track > outputs/untracked-rerun.json
-```
-
-Tracking is **off by default**. The existing detection-only command is preserved.
-Tracking flags require `--video`; tuning flags also require `--track`.
-`--track-iou` must be in (0, 1], `--track-max-missed` a nonnegative integer, and
-`--track-min-hits` a positive integer. Defaults are 0.3, 5, and 2 respectively.
-Settings are CLI options; the existing JSON device/log-level schema is unchanged.
-
-IDs such as `person #001 0.97` are local to one video session. `#001?` means a
-tentative track, confirmed after the configured number of consecutive observations.
-IDs/colors remain consistent while associations succeed. Missed tracks retain
-their last observed box for association but are not drawn as current detections;
-they expire after more than the configured number of missed source frames.
-
-On the 48-frame sample, #001 persisted over frames 0–23; #002 persisted over frames
-36–43 and recovered at frame 46 after two misses. The detector incorrectly labelled
-the character `bird` at frames 44–45, producing #003. A shot/gap also fragmented
-the person into separate IDs. This baseline does not establish tracking accuracy,
-handle all crossings/occlusions, or identify people.
-
-Measured tracker updates averaged **0.1035 ms/frame**. The matched comparison
-measured 5.27/5.38 processing FPS and 2.67/2.66 full end-to-end FPS with tracking
-off/on; timing variation does not demonstrate a speedup. The report includes
-average detections per frame, association times, and active-track statistics.
-See [algorithm evaluation, lifecycle, benchmark, trace commands, and limits](docs/phase3a.md).
-
-Detection finds/classifies boxes in each frame. Tracking associates those boxes
-and assigns temporary IDs. Counting would derive events or quantities from tracks
-and geometry; **object counting is not implemented**. Track creation and detection
-totals in diagnostic reports are not counts of unique physical objects.
-
-## Detect objects in a video (headless)
-
-Use the existing environment and downloaded Phase 2A checkpoint:
-
-```bash
-cd ~/jetson-projects/ai/projects/jetson-edge-vision
+# Activate your compatible Jetson environment. On the original development device:
 source ~/jetson-projects/ai/ai-env/bin/activate
-export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
-mkdir -p outputs
 
-python -m jetson_edge_vision --config configs/default.json \
-  --video /path/to/input.mp4 --output outputs/video-detected.mp4 \
-  --confidence 0.5 --warmup 3 > outputs/video-report.json
-
-# Short test; select new filenames for each run:
-python -m jetson_edge_vision --video /path/to/input.mov \
-  --output outputs/short-test.avi --codec MJPG --max-frames 48 \
-  --confidence 0.5 > outputs/short-test-report.json
-```
-
-MP4, AVI, and MOV inputs are supported when the installed OpenCV can decode their
-particular codec. Actual write/decode probes passed for MP4/MOV with `mp4v` and
-AVI with `MJPG`; `avc1` also passed an MP4 probe. Defaults are `mp4v` for MP4/MOV
-and `MJPG` for AVI. `--codec FOURCC` selects an installed alternative; an
-unavailable encoder produces an error suggesting AVI/MJPG, without installing
-anything or silently changing formats.
-
-The model loads once per video, warms up once (default: three passes), and performs
-one measured inference per frame. Frames are read sequentially with no GUI,
-preview, frame skipping, or audio output. Tracking is opt-in. Decoded dimensions and source
-FPS are preserved. `--max-frames N` stops after N frames; without it, processing
-continues until the decoder ends. `--runs` remains image-only. If source FPS is
-invalid/missing, supply `--output-fps 24` (or another known correct value).
-Overriding valid source FPS changes output playback duration.
-
-The JSON report separates source playback FPS, synchronized inference latency,
-processing-loop FPS, and full end-to-end FPS including initialization and output
-verification. Total detections are repeated observations across frames, not unique
-objects or a counting feature. The 48-frame, 24 FPS verification clip measured
-**4.93 processing FPS**, **180.13 ms mean inference**, and **2.52 full end-to-end
-FPS**. These measurements do not establish real-time processing.
-
-Outputs are encoded in temporary storage, fully decoded to verify every frame,
-then published without overwriting existing files. Failures before publication
-and Ctrl+C discard the staged video and release readers/writers. Choose a new
-output filename to repeat a run; shell redirection can still overwrite JSON reports.
-Keep videos/reports under ignored `data/` and `outputs/`.
-
-Known limits include omitted audio, constant-frame-rate output, backend-dependent
-rotation metadata, and conservative handling of decoder failures. Odd dimensions
-and known non-square pixels are rejected to avoid silently changing geometry.
-See [Phase 2B architecture, codec evidence, troubleshooting, sample attribution,
-and full benchmark](docs/phase2b.md).
-
-## Detect objects in an image
-
-```bash
-cd ~/jetson-projects/ai/projects/jetson-edge-vision
-source ~/jetson-projects/ai/ai-env/bin/activate
+# Use the repository's src layout without installing the package:
 export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
 
-# Explicit download of the approved official checkpoint, needed only once:
+# One-time, explicit download of the approved official model weights:
 python -m jetson_edge_vision --download-weights
-mkdir -p outputs
 
-# Choose an output that does not already exist:
-python -m jetson_edge_vision --config configs/default.json \
-  --image /path/to/image.jpg --output outputs/image-detected.jpg \
-  --confidence 0.5 --warmup 3 --runs 10 > outputs/image-report.json
+mkdir -p outputs
 ```
 
-Detection never downloads weights automatically. `--download-weights` creates
-`models/`, verifies the official SHA256 prefix, and exits. Existing checkpoints
-are verified and reused; corrupt files are rejected without replacement.
-Use `--weights /path/to/checkpoint.pth` to locate another copy of the same approved
-checkpoint. The report records the complete SHA256. No package resolver or
-installer is invoked.
+**The environment activation path above is specific to the original Jetson.** Use the equivalent Python environment path on your own device. The checkpoint download is explicit, verified, and kept under Git-ignored `models/`; normal inference never downloads weights automatically.
 
-JSON results go to stdout; logs go to stderr. Image output parent directories are
-created automatically; create report directories before shell redirection. The
-input image and existing output images are never overwritten. Image outputs
-support JPEG, PNG, BMP, TIFF, and WebP subject to existing codecs. OpenCV decodes
-inputs to BGR colour, dropping alpha and expanding grayscale; the detector converts
-to RGB float32 in [0, 1]. Boxes are `[x1, y1, x2, y2]` in decoded input-image pixel
-coordinates. Labels show scores on a 0–1 scale.
-
-`--confidence` accepts finite values from 0 to 1. `--warmup` accepts zero or more
-unmeasured passes; `--runs` requires at least one measured pass (defaults: 3 and
-10). Each pass uses the same image. `device` in the existing config now also
-selects inference device; the default is CUDA. A deliberately configured CPU run
-is supported, but CUDA failures never trigger automatic CPU fallback.
-
-The verified example detected **dog, confidence 0.7512**, with mean inference
-**151.25 ms** and total processing **10,701.65 ms**. These are observed FP32
-results, not guaranteed performance. See [model evaluation, timing boundaries,
-licensing, and full verification evidence](docs/phase2a.md).
-
-## Test image detection
+### Detect objects in an image
 
 ```bash
-# Offline tests; actual CUDA integration is skipped by default:
+python -m jetson_edge_vision \
+  --image /path/to/image.jpg \
+  --output outputs/image-detected.jpg \
+  --confidence 0.5 --warmup 3 --runs 10 \
+  > outputs/image-report.json
+```
+
+### Detect objects in a video
+
+```bash
+python -m jetson_edge_vision \
+  --video /path/to/video.mp4 \
+  --output outputs/video-detected.mp4 \
+  --confidence 0.5 --warmup 3 \
+  > outputs/video-report.json
+```
+
+### Detect and track objects in a video
+
+```bash
+python -m jetson_edge_vision \
+  --video /path/to/video.mp4 \
+  --output outputs/video-tracked.mp4 \
+  --confidence 0.5 --warmup 3 \
+  --track --track-iou 0.3 --track-max-missed 5 --track-min-hits 2 \
+  > outputs/tracking-report.json
+```
+
+Tracking is **off by default**. Output media is created without opening a GUI window; log messages go to stderr and machine-readable results to stdout. Choose **new output filenames** for repeated runs: the application protects existing annotated outputs from accidental replacement, although shell redirection can overwrite a JSON report.
+
+Supported video containers include MP4, MOV, and AVI **when your installed codecs support them**. The original Jetson passed MP4/MOV `mp4v` and AVI `MJPG` encode/decode checks. Audio and original variable frame timings are not preserved in the current output pipeline. See [video processing notes](docs/phase2b.md).
+
+### Evaluate the tracker without GPU inference
+
+```bash
+python -m jetson_edge_vision.tracking_evaluation \
+  --repeats 10 \
+  --output outputs/tracking-evaluation.json
+```
+
+This runs the independent synthetic evaluator. CPU replay throughput is **not** GPU video-processing FPS. See [Phase 3B](docs/phase3b.md) for saved-trace replay, trace hashes, reviewed labels, and diagnostic definitions.
+
+## Run the tests
+
+```bash
+# Offline regression tests; GPU integrations are skipped by default:
 python -m unittest discover -s tests -v
 
-# Requires host GPU access and the already downloaded checkpoint:
+# Opt-in CUDA integrations; requires GPU access and the approved local weights:
 JEV_GPU_TESTS=1 python -m unittest discover -s tests -v
 
-# Also verify a known class in your own example image:
-JEV_GPU_TESTS=1 JEV_TEST_IMAGE=/path/to/dog.jpg JEV_EXPECT_CLASS=dog \
-  python -m unittest discover -s tests -v
+# Explicit environment diagnostics:
+python -m jetson_edge_vision --check-environment
 ```
 
-An explicitly enabled GPU test fails if CUDA or weights are unavailable; it does
-not download assets or fall back to CPU. Optional `JEV_WEIGHTS` selects the
-checkpoint location. All eight original foundation tests are preserved.
+The most recent verified suite reported **113 passing tests with GPU integrations enabled**. Default discovery reported **109 passes and four expected GPU-test skips**. Some sample-specific integrations require local media paths and environment variables described in the [image](docs/phase2a.md), [video](docs/phase2b.md), and [tracking](docs/phase3a.md) reports; sample images/videos are **not included** in this repository.
 
-The complete Phase 2B suite passed **57 tests with GPU testing enabled**, including
-all 28 existing tests. Default discovery passes 55 and skips two GPU integrations.
-Synthetic clips verify video decoding/encoding and mocked frame inference without
-the GPU. To also verify the local licensed Sintel excerpt:
-
-```bash
-JEV_GPU_TESTS=1 JEV_TEST_VIDEO=data/sintel-sample.mp4 \
-  JEV_VIDEO_EXPECT_CLASS=person python -m unittest discover -s tests -v
-```
-
-The sample is already present in the verified workspace; tests never download it.
-Without `JEV_TEST_VIDEO`, the video GPU test generates its own synthetic clip.
-
-Phase 3A passed **85 tests with GPU testing enabled**, preserving the original 57.
-Default discovery passes 82 and skips three CUDA integrations. Synthetic sequences
-cover multiple moving objects, association, misses, expiration, reset, categories,
-confirmation, deterministic ties, and the known crossing ambiguity. Tracking
-integration also requires the existing local Sintel clip:
-
-```bash
-JEV_GPU_TESTS=1 JEV_TRACK_VIDEO=data/sintel-sample.mp4 \
-  python -m unittest discover -s tests -v
-```
-
-That clip must contain overlapping detections across consecutive frames; the
-tracking GPU test checks actual ID persistence and never downloads sample media.
-
-Phase 3B passed **113 tests with GPU integrations enabled**, preserving all 85
-previous tests unchanged. Default discovery passes 109 and skips four GPU tests.
-The new tests verify diagnostic definitions, parameter tradeoffs, trace integrity,
-manual-label binding, absent-ground-truth behavior, repeatability, and replay of
-an actual CUDA-generated trace. Existing test commands also run the new tests.
-
-## Run the foundation
-
-Use the existing Jetson AI environment. No installation is required:
-
-```bash
-cd ~/jetson-projects/ai/projects/jetson-edge-vision
-source ~/jetson-projects/ai/ai-env/bin/activate
-export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
-python -m jetson_edge_vision --config configs/default.json
-python -m jetson_edge_vision --config configs/default.json --check-environment
-python -m unittest discover -s tests -v
-```
-
-Startup validates configuration and writes a JSON readiness log to stderr, then
-exits. It does not load a model, open a camera, or process media. The diagnostic
-command additionally imports the existing AI libraries, runs a tensor sum and
-Torchvision NMS on the configured device, checks OpenCV resizing, and prints JSON
-to stdout. It returns a nonzero exit code on failure. GPU access must be available
-to the process: restricted sandboxes can block Jetson memory devices even when
-the host GPU works. CUDA failure never silently falls back to CPU.
-
-Use `--help` for options and `--version` for the package version. Relative config
-paths are resolved from the working directory. Omitting `--config` uses defaults.
-A CPU diagnostic can be requested by using `"device": "cpu"` in a separate config;
-it does not verify GPU functionality. Without an explicit command, startup still
-avoids hardware imports, model loading, and image processing.
-
-## Project structure
+## Repository layout
 
 ```text
-configs/default.json                 Validated startup settings
+configs/                     Default application settings
+docs/                        Architecture, environment, and phase reports
 src/jetson_edge_vision/
-  __init__.py                        Package version
-  __main__.py                        Module entry point
-  cli.py                             Command orchestration and exit codes
-  config.py                          Immutable settings and JSON validation
-  logging_utils.py                   Application-scoped structured logging
-  diagnostics.py                     Explicit environment checks
-  detection.py                       Approved checkpoint and reusable detector
-  image_pipeline.py                  Image decoding, annotation, output, timing
-  video_pipeline.py                  Sequential video processing and verification
-  tracking.py                        Session-local class-aware IoU tracker
-  evaluation_scenarios.py            Original labelled synthetic detections
-  tracking_evaluation.py             Independent CPU evaluation/report command
- tests/test_foundation.py             Configuration, logging, and CLI tests
- tests/test_detection.py              Offline and opt-in CUDA detection tests
- tests/test_video.py                  Video/codec tests and CUDA integration
- tests/test_tracking.py               Synthetic association and CUDA tracking tests
- tests/test_tracking_evaluation.py    Scoring, replay, annotations, CUDA trace contract
- docs/architecture.md                Module boundaries and phased roadmap
- docs/environment.md                 Dependencies and verification evidence
- docs/phase2a.md                      Model evaluation and GPU measurements
- docs/phase2b.md                      Video behavior, codecs, and GPU measurements
- docs/phase3a.md                      Tracker evaluation, lifecycle, and measurements
- docs/phase3b.md                      Reproducible evaluation methodology and results
-pyproject.toml                       Package metadata and optional CLI entry point
+  cli.py                     Command-line interface
+  detection.py               Model loading, checkpoint verification, CUDA inference
+  image_pipeline.py          Image input, annotation, and timing
+  video_pipeline.py          Local video processing and output validation
+  tracking.py                Class-aware greedy IoU tracking
+  evaluation_scenarios.py    Labelled synthetic tracking scenarios
+  tracking_evaluation.py     Independent tracking evaluator and trace replay
+tests/                       Unit, regression, and opt-in GPU integration tests
+pyproject.toml               Project metadata
 ```
 
-The source layout makes imports explicit and keeps test files outside the package.
-The commands above use `PYTHONPATH` to avoid modifying the existing environment.
-The packaged entry point is declared for future installation; this workflow uses
-`python -m jetson_edge_vision` and does not require an editable install.
+The data, model checkpoints, generated videos, logs, and performance reports used during development are excluded from Git by design.
 
-## Configuration and logging
+## Known limitations
 
-Configuration currently accepts only `device` (`cuda` or `cpu`) and `log_level`
-(`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`). Unknown keys, invalid values,
-unreadable files, and malformed JSON fail with informative messages. JSON uses
-Python's standard library, avoiding an additional configuration dependency.
-
-Logs contain UTC `timestamp`, `level`, `logger`, and `message`; exception records
-also include an `exception` field. Only the application logger is configured.
-Repeated initialization does not duplicate output. Persistent logs and event
-storage will be added in later phases.
-
-## Environment safeguards
-
-Do not replace the working ARM64 CUDA PyTorch or Torchvision builds. Do not install
-`opencv-python` or `opencv-python-headless`: the existing OpenCV preserves
-GStreamer integration. No packages or system settings were changed for Phase 1.
-See [environment verification](docs/environment.md) for measured checks.
-
-The CSI camera has an unresolved purple/magenta cast. Phase 1 does not open it.
-Phase 2A processes images and Phase 2B local video files; camera integration is Phase 5.
-The verified `hello-gpu` and `camera-gpu` projects remain untouched.
+- **Not yet real-time** on the tested 24 FPS clip; no TensorRT or FP16 optimization is claimed.
+- **Tracking is a baseline**, not SORT, ByteTrack, or biometric identification. Occlusions, crossings, shot cuts, and category changes can cause ID switches or fragmentation.
+- **Real-world tracking accuracy is unestablished** without representative, reviewed ground-truth annotations. Synthetic diagnostics are not MOTChallenge, IDF1, or HOTA scores.
+- **Detection accuracy is not deployment-validated**: a 320×320 model can struggle with small objects, poor lighting, occlusion, and domain shifts.
+- **No live camera mode yet.** The attached e-con Systems CSI camera has an unresolved purple/magenta colour cast; driver and ISP modifications have intentionally been deferred.
+- **No object counting, persistent event storage, API, or dashboard yet.**
 
 ## Roadmap
 
-1. Foundation: configuration, logs, diagnostics, tests — verified.
-2. Phases 2A/2B: PyTorch CUDA image/video-file detection, measured latency,
-   annotated output, and tests — verified.
-3. Phase 3A: optional IoU tracking — verified. Phase 3B: controlled evaluation and
-   parameter replay — complete; representative labelled real-video accuracy remains unestablished.
-4. Add tested line/region counting and stored events.
-5. Integrate CSI capture and document camera limitations.
-6. Add a local API and simple dashboard.
-7. Benchmark and evaluate TensorRT/FP16 using measured results.
-8. Prepare documentation, licensing, examples, and release checks for GitHub.
+- [x] **Phase 1 — Foundation:** CLI, configuration, JSON logging, diagnostics, tests.
+- [x] **Phase 2A — Image detection:** Pretrained COCO detector, CUDA inference, annotated output.
+- [x] **Phase 2B — Video detection:** Local video processing, encoding verification, performance reporting.
+- [x] **Phase 3A — Tracking:** Optional IoU-based session IDs and tracking annotations.
+- [x] **Phase 3B — Evaluation:** Reproducible synthetic sweeps, trace replay, failure documentation.
+- [ ] **Real-world validation:** Representative clips with reviewed identity labels before deployment claims.
+- [ ] **Phase 4 — Object counting:** Tested line/region crossing events with duplicate suppression.
+- [ ] **Phase 5 — CSI camera:** Live input after addressing image-quality limitations.
+- [ ] **Phase 6 — Local dashboard:** API and monitoring interface.
+- [ ] **Phase 7 — Optimization:** Benchmark suitable TensorRT/FP16 paths against the measured baseline.
 
-See [architecture](docs/architecture.md), [Phase 2A evidence](docs/phase2a.md), and
-[Phase 2B evidence](docs/phase2b.md), [Phase 3A evidence](docs/phase3a.md), and
-[Phase 3B evaluation](docs/phase3b.md).
-Counting and subsequent phases have not been started.
+## Technical reports
 
-## Repository hygiene and licensing
+- [Architecture and module boundaries](docs/architecture.md)
+- [Verified Jetson environment and safeguards](docs/environment.md)
+- [Phase 2A: model selection, checkpoint, image inference, licensing](docs/phase2a.md)
+- [Phase 2B: codec checks, video performance, reproducibility](docs/phase2b.md)
+- [Phase 3A: tracking lifecycle and observed behavior](docs/phase3a.md)
+- [Phase 3B: tracking evaluation methods, parameter sweeps, and limitations](docs/phase3b.md)
 
-Git is initialized locally on `main`; no remote, commit, or push is created by
-Phase 1. `.gitignore` excludes environment files, caches, typical model weights,
-video recordings, logs, local data, and database outputs. Review `git diff` and
-`git status` before staging: ignore rules cannot detect every credential or
-private image. Keep recordings and downloaded assets under ignored `data/` and
-weights under ignored `models/`.
+## Licensing and responsible use
 
-An open-source license has not yet been selected; this is not yet an open-source
-release. Select a project license and review model, weight, and dependency
-licenses before publication. Torchvision code is BSD-3-Clause, but its pretrained
-weights have a separate dataset-derived licensing caveat: code licensing alone
-does not establish unrestricted rights to COCO-trained weights. See the
-[licensing limitations](docs/phase2a.md#licensing-limitations). Weights, example
-images, reports, and annotated images remain local under ignored directories.
+**No project-level open-source license has been selected yet.** Public access to this repository does not itself grant permission to reuse or redistribute its code. A deliberate license decision is planned before a formal release.
+
+Torchvision source code has a BSD-3-Clause license, but **pretrained weights may carry separate dataset-derived terms**; redistribution and commercial-use rights for the COCO_V1 checkpoint should be reviewed independently. Model weights, sample images, example videos, and generated reports are not bundled in this repository. The project is a development and evaluation prototype, not a validated safety, surveillance, or high-stakes decision system.
+
+---
+
+*Built and benchmarked on an NVIDIA Jetson Orin Nano Super. Development is ongoing; the measurements and limitations above describe the verified state through Phase 3B (October 2026).*
